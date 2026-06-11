@@ -1,4 +1,22 @@
 import { useState, useEffect, useRef } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+
+// ─── Firebase ─────────────────────────────────────────────────────────────────
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAoWLHDl95F2CHZNn2dVlEkDrBfCyssfgM",
+  authDomain: "tarefas-junior.firebaseapp.com",
+  projectId: "tarefas-junior",
+  storageBucket: "tarefas-junior.firebasestorage.app",
+  messagingSenderId: "393234772164",
+  appId: "1:393234772164:web:480ade3663730fccd91991"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+const COLLECTION = "tarefas";
+const USER_ID = "junior"; // ID fixo — app pessoal
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -13,7 +31,6 @@ const STATUS = {
   concluida:    { label: "Concluída",    color: "#10B981" },
 };
 
-const STORAGE_KEY = "tarefas_v1";
 const today = () => new Date().toISOString().slice(0, 10);
 const EMPTY_FORM = {
   titulo: "", descricao: "", urgencia: "media", prazo: "",
@@ -21,14 +38,6 @@ const EMPTY_FORM = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const loadTasks = () => {
-  try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : null; }
-  catch { return null; }
-};
-const saveTasks = (t) => {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(t)); } catch {}
-};
 
 const isOverdue   = (t) => t.prazo && t.status !== "concluida" && t.prazo < today();
 const daysUntil   = (d) => { if (!d) return null; return Math.round((new Date(d + "T00:00:00") - new Date(today() + "T00:00:00")) / 86400000); };
@@ -94,7 +103,8 @@ function RadialProgress({ pct, color = "#52B788", size = 88 }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [tasks,    setTasks]    = useState(() => loadTasks() || []);
+  const [tasks,    setTasks]    = useState([]);
+  const [loading,  setLoading]  = useState(true);
   const [tab,      setTab]      = useState("lista");
   const [view,     setView]     = useState("lista");
   const [form,     setForm]     = useState(EMPTY_FORM);
@@ -106,7 +116,16 @@ export default function App() {
   const [toast,    setToast]    = useState(null);
   const toastTimer = useRef(null);
 
-  useEffect(() => { saveTasks(tasks); }, [tasks]);
+  // ── Firestore realtime listener ──
+  useEffect(() => {
+    const ref = collection(db, "users", USER_ID, COLLECTION);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+      setTasks(data);
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, []);
 
   const showToast = (msg, type = "ok") => {
     setToast({ msg, type });
@@ -134,7 +153,7 @@ export default function App() {
         if (a.prazo && b.prazo) return a.prazo.localeCompare(b.prazo);
         if (a.prazo) return -1; if (b.prazo) return 1;
       }
-      if (sort === "criacao") return (b.id || 0) - (a.id || 0);
+      if (sort === "criacao") return (b.criadoEm || "").localeCompare(a.criadoEm || "");
       return 0;
     });
 
@@ -161,33 +180,40 @@ export default function App() {
     color: ["#1B6CA8", "#2E86C1", "#52B788", "#74C69D", "#B7E4C7"][i],
   }));
 
-  // ── CRUD ──
-  const saveTask = () => {
+  // ── CRUD com Firestore ──
+  const saveTask = async () => {
     if (!form.titulo.trim()) { showToast("Informe um título", "err"); return; }
-    if (editId !== null) {
-      setTasks(prev => prev.map(t => t.id === editId ? { ...t, ...form } : t));
-      showToast("Tarefa atualizada ✓");
-    } else {
-      setTasks(prev => [{ ...form, id: Date.now(), criadoEm: today() }, ...prev]);
-      showToast("Tarefa criada ✓");
-    }
+    const id = editId !== null ? editId : Date.now().toString();
+    const task = { ...form, id, criadoEm: editId ? (tasks.find(t=>t.id===editId)?.criadoEm || today()) : today() };
+    await setDoc(doc(db, "users", USER_ID, COLLECTION, id), task);
+    showToast(editId ? "Tarefa atualizada ✓" : "Tarefa criada ✓");
     setForm(EMPTY_FORM); setEditId(null); setView("lista");
   };
-  const deleteTask = (id) => {
-    setTasks(prev => prev.filter(t => t.id !== id));
+
+  const deleteTask = async (id) => {
+    await deleteDoc(doc(db, "users", USER_ID, COLLECTION, id));
     setView("lista"); setSelected(null); showToast("Tarefa removida");
   };
-  const toggleStatus = (id) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      return { ...t, status: t.status === "concluida" ? "pendente" : "concluida" };
-    }));
+
+  const toggleStatus = async (id) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const next = task.status === "concluida" ? "pendente" : "concluida";
+    await setDoc(doc(db, "users", USER_ID, COLLECTION, id), { ...task, status: next });
   };
+
   const openEdit   = (task) => { setForm({ ...EMPTY_FORM, ...task }); setEditId(task.id); setView("nova"); };
   const openDetail = (task) => { setSelected(task); setView("detalhe"); };
 
   const inListRoot = tab === "lista" && view === "lista";
   const inDash     = tab === "dashboard";
+
+  if (loading) return (
+    <div style={{ ...S.root, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12, minHeight: "100vh" }}>
+      <div style={{ fontSize: 36 }}>📋</div>
+      <div style={{ color: "#1B6CA8", fontWeight: 700, fontSize: 16 }}>Carregando tarefas...</div>
+    </div>
+  );
 
   return (
     <div style={S.root}>
@@ -200,7 +226,7 @@ export default function App() {
           )}
           <div>
             <div style={S.headerTitle}>
-              {inDash                             && "Dashboard"}
+              {inDash                                 && "Dashboard"}
               {tab === "lista" && view === "lista"    && "Minhas Tarefas"}
               {tab === "lista" && view === "nova"     && (editId ? "Editar Tarefa" : "Nova Tarefa")}
               {tab === "lista" && view === "detalhe"  && "Detalhe"}
@@ -228,7 +254,6 @@ export default function App() {
       {/* ══ TAB: LISTA ══ */}
       {tab === "lista" && (
         <>
-          {/* Lista principal */}
           {view === "lista" && (
             <div style={S.body}>
               <div style={S.searchRow}>
@@ -276,7 +301,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Nova / Editar */}
           {view === "nova" && (
             <div style={S.body}>
               <Fg label="Título *">
@@ -320,7 +344,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Detalhe */}
           {view === "detalhe" && selected && (() => {
             const task = tasks.find(t => t.id === selected.id) || selected;
             const urg = URGENCY[task.urgencia], days = daysUntil(task.prazo), od = isOverdue(task);
@@ -360,7 +383,6 @@ export default function App() {
             );
           })()}
 
-          {/* Filtros */}
           {view === "filtros" && (
             <div style={S.body}>
               <Fg label="Urgência">
@@ -457,14 +479,12 @@ export default function App() {
   );
 }
 
-// ─── Micro components ─────────────────────────────────────────────────────────
 const Fg     = ({ label, children }) => <div style={{ marginBottom: 18 }}>{label && <div style={S.label}>{label}</div>}{children}</div>;
 const DRow   = ({ label, children }) => <div style={S.detailRow}><span style={S.detailRowLabel}>{label}</span>{children}</div>;
 const Toggle = ({ on, onChange })   => <div style={{ ...S.toggle, background: on ? "#52B788" : "#D1D5DB" }} onClick={() => onChange(!on)}><div style={{ ...S.toggleKnob, transform: on ? "translateX(22px)" : "translateX(2px)" }} /></div>;
 const KPI    = ({ value, label, color, bg }) => <div style={{ ...S.kpiCard, background: bg }}><div style={{ fontSize: 26, fontWeight: 800, color, lineHeight: 1 }}>{value}</div><div style={{ fontSize: 10, color, opacity: 0.75, marginTop: 3, fontWeight: 600 }}>{label}</div></div>;
 const NavBtn = ({ icon, label, active, onClick }) => <button style={{ ...S.navBtn, ...(active ? S.navBtnActive : {}) }} onClick={onClick}><span style={{ fontSize: 20 }}>{icon}</span><span style={{ fontSize: 10, fontWeight: active ? 700 : 500, marginTop: 2 }}>{label}</span></button>;
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
 const S = {
   root:           { fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", background: "#F9FAFB", minHeight: "100vh", maxWidth: 480, margin: "0 auto", position: "relative" },
   header:         { background: "#1B6CA8", color: "#fff", padding: "16px 16px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 10, boxShadow: "0 2px 10px rgba(27,108,168,0.35)" },
