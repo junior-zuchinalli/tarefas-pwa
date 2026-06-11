@@ -1,0 +1,15 @@
+{
+  "name": "Minhas Tarefas",
+  "short_name": "Tarefas",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F9FAFB",
+  "theme_color": "#1B6CA8",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/junior-zuchinalli/tarefas-pwa/main/icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
